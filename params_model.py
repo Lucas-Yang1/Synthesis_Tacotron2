@@ -14,6 +14,8 @@ hparams = Hyparams(
     # encoder
     n_char=len(idx2symbol),
     encoder_embedding_dim=256,
+    encoder_kernel_size=3,
+    encoder_dropout=0.5,
     # decoder
     prenet_dim=256,
     prenet_dropout=0.5,
@@ -27,6 +29,12 @@ hparams = Hyparams(
     attention_rnn_dim=512,
     attention_dim=512,
     attention_location_n_filters=32,
-    attention_location_kernel_size=31,
+    attention_location_kernel_size=3,
+
+    # postnet
+    postnet_embedding_dim=256,
+    postnet_kernel_size=5,
+    postnet_conv_nums=5,
+    p_postnet_dropout=0.5
 
 )

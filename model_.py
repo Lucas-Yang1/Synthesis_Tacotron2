@@ -299,3 +299,31 @@ class Decoder(nn.Module):
         )
 
         return mel_outputs, gate_outputs, alignments
+
+    def inference(self, memory):
+        """
+        inference,
+        Memory: encoder output
+        """
+
+        decoder_input = self.get_go_frame(memory)
+
+        self.initialize_decoder_stats(memory, mask=None)
+        mel_outputs, gate_outputs, alignments = [], [], []
+
+        while True:
+            decoder_input = self.prenet(decoder_input)
+            mel_output, gate_output, attention_weight= self.decode(decoder_input)
+
+            mel_outputs += [mel_output.squeeze(1)]
+            gate_outputs += [gate_output.squeeze(1)]
+            alignments += [attention_weight]
+
+            if torch.sigmoid(gate_output.data) > self.gate_threshold:
+                break
+            elif len(mel_outputs) == self.max_decoder_steps:
+                print("Warning, inference reached the max decoder steps")
+                break
+            decoder_input = mel_output
+
+        return self.parse_decoder_outputs(mel_outputs, gate_outputs, alignments)

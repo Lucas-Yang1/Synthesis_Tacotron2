@@ -4,22 +4,32 @@ import torch.nn as nn
 import torch
 class Conv1dWithBatchNorm(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size,
-                 stride, padding=None, dilation=1, w_init_gain='tanh'):
+                 stride, padding=0, dilation=1, w_init_gain='tanh'):
         super(Conv1dWithBatchNorm, self).__init__()
         if padding == None:
             padding = int(kernel_size // 2)
         self.conv1d = nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size,
                                 stride=stride, padding=padding, dilation=dilation, bias=False)
         self.bn = nn.BatchNorm1d(out_channels)
-        self.relu = nn.ReLU()
+        self.activate = getattr(torch, w_init_gain) if w_init_gain is not 'linear' else lambda x:  x
 
         nn.init.xavier_normal_(self.conv1d.weight, gain=nn.init.calculate_gain(w_init_gain))
         nn.init.ones_(self.bn.weight)
         nn.init.zeros_(self.bn.bias)
 
     def forward(self, x):
-        return self.bn(self.relu(self.conv1d(x)))
+        return self.bn(self.activate(self.conv1d(x)))
 
+class Conv1dNorm(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size,
+                 stride, padding=0, dilation=1, bias=False,w_init_gain='linear'):
+        super(Conv1dNorm, self).__init__()
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size,
+                              stride, padding=padding, dilation=dilation, bias=bias)
+
+        nn.init.xavier_normal_(self.conv.weight, gain=nn.init.calculate_gain(w_init_gain))
+    def forward(self, x):
+        return self.conv(x)
 
 class LinearNorm(nn.Module):
     def __init__(self, in_features, out_features, bias=False, w_init_gain='tanh'):
