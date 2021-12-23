@@ -6,6 +6,8 @@ from warnings import warn
 import numpy as np
 import librosa
 import struct
+from audio_ import melspectrogram
+from params_model import hparams
 
 try:
     import webrtcvad
@@ -55,14 +57,16 @@ def wav_to_mel_spectrogram(wav):
     Derives a mel spectrogram ready to be used by the encoder from a preprocessed audio waveform.
     Note: this not a log-mel spectrogram.
     """
-    frames = librosa.feature.melspectrogram(
-        wav,
-        sampling_rate,
-        n_fft=int(sampling_rate * mel_window_length / 1000),
-        hop_length=int(sampling_rate * mel_window_step / 1000),
-        n_mels=mel_n_channels
-    )
-    return frames.astype(np.float32).T
+    # frames = librosa.feature.melspectrogram(
+    #     wav,
+    #     sampling_rate,
+    #     n_fft=int(sampling_rate * mel_window_length / 1000),
+    #     hop_length=int(sampling_rate * mel_window_step / 1000),
+    #     n_mels=mel_n_channels
+    # )
+    # return frames.astype(np.float32).T
+    return melspectrogram(wav, hparams)
+
 
 
 def trim_long_silences(wav):

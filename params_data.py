@@ -2,7 +2,7 @@
 ## Mel-filterbank
 mel_window_length = 25  # In milliseconds
 mel_window_step = 10    # In milliseconds
-mel_n_channels = 40
+mel_n_channels = 80
 
 
 ## Audio

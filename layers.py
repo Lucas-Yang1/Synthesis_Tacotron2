@@ -11,7 +11,7 @@ class Conv1dWithBatchNorm(nn.Module):
         self.conv1d = nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size,
                                 stride=stride, padding=padding, dilation=dilation, bias=False)
         self.bn = nn.BatchNorm1d(out_channels)
-        self.activate = getattr(torch, w_init_gain) if w_init_gain is not 'linear' else lambda x:  x
+        self.activate = getattr(torch, w_init_gain) if w_init_gain != 'linear' else lambda x:  x
 
         nn.init.xavier_normal_(self.conv1d.weight, gain=nn.init.calculate_gain(w_init_gain))
         nn.init.ones_(self.bn.weight)

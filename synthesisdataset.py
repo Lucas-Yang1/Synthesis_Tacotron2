@@ -3,6 +3,8 @@ from pathlib import Path
 import numpy as np
 import random
 from symbols import tokenizer
+import torch
+
 class SynthesisDataset(Dataset):
     def __init__(self, data_root: Path, use_raw_embedding: bool = True):
         self.data_root = data_root
@@ -53,9 +55,50 @@ class SynthesisDataLoader(DataLoader):
 
 class SynthesisBatchData:
     def __init__(self, mel_fpath, embedding_fpath, text):
-        self.mel_data = np.array([np.load(mel) for mel in mel_fpath])
-        self.embedding = np.array([np.load(embedding) for embedding in embedding_fpath])
-        self.tokens = np.array([tokenizer(t) for t in text])
+        self.mels, self.output_lengths, self.gate_target = self.mel_load(mel_fpath)
+        self.speaker_embedding= np.array([np.load(embedding) for embedding in embedding_fpath])
+        self.text_inputs, self.text_lengths = self.batch_tokenizer(text)
+
+        self.mels = torch.FloatTensor(self.mels)
+        self.output_lengths = torch.FloatTensor(self.output_lengths)
+        self.gate_target = torch.FloatTensor(self.gate_target)
+        self.speaker_embedding = torch.FloatTensor(self.speaker_embedding)
+        self.text_inputs = torch.LongTensor(self.text_inputs)
+        self.text_lengths = torch.FloatTensor(self.text_lengths)
+
+    def cuda(self):
+        self.mels = self.mels.cuda()
+        self.output_lengths = self.output_lengths.cuda()
+        self.gate_target = self.gate_target.cuda()
+        self.speaker_embedding = self.speaker_embedding.cuda()
+        self.text_lengths = self.text_lengths.cuda()
+        self.text_inputs = self.text_inputs.cuda()
+
+    def batch_tokenizer(self, text: list[str]):
+        max_len = max(map(len, text)) + 1 # + __eos token
+        token = [None] * len(text)
+        text_len = [None] * len(text)
+        for i in range(len(text)):
+            cur_token = tokenizer(text[i])
+            token[i] = cur_token + [0] * (max_len - len(cur_token))
+            text_len[i] = len(cur_token)
+        return np.array(token), np.array(text_len)
+
+    def mel_load(self, mel_fpath):
+        mel_data = [np.load(mel).T for mel in mel_fpath]
+        max_len = max(map(lambda x: x.shape[0], mel_data))
+        n_mel_channel = mel_data[0].shape[1]
+        mel = [None] * len(mel_data)
+        mel_len = [None] * len(mel_data)
+        for i in range(len(mel_data)):
+            mel[i] = np.concatenate(
+                (mel_data[i], np.zeros((max_len-mel_data[i].shape[0], n_mel_channel))), axis=0)
+            mel_len[i] = mel_data[i].shape[0]
+        mel_len = np.array(mel_len)
+        ids = np.arange(max(mel_len))
+        gate = ~(ids[None, :] <mel_len[:, None])
+        gate = gate.astype(int)
+        return np.array(mel), np.array(mel_len), gate
 
 class RandomCycler:
     """

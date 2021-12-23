@@ -1,0 +1,7 @@
+.idea
+archive/
+
+*.log
+
+postdata/
+/__pycache__

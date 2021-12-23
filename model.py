@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from layers import LinearNorm, Conv1dWithBatchNorm, clone, get_mask_from_lengths, Conv1dNorm
 from params_model import hparams
+from synthesisdataset import SynthesisBatchData
 
 
 class LocalLayer(nn.Module):
@@ -104,13 +105,18 @@ class Postnet(nn.Module):
     def __init__(self, hparams=hparams):
         super(Postnet, self).__init__()
         self.layers = nn.Sequential(
-            Conv1dWithBatchNorm(hparams.n_mel_channel, hparams.postnet_embedding_dim, hparams.postnet_kernel_size, stride=1,
-                                padding=int((hparams.postnet_kernel_size - 1) / 2)), nn.Dropout(hparams.p_postnet_dropout),
-            *clone(nn.Sequential(Conv1dWithBatchNorm(hparams.postnet_embedding_dim, hparams.postnet_embedding_dim, hparams.postnet_kernel_size,
+            Conv1dWithBatchNorm(hparams.n_mel_channel, hparams.postnet_embedding_dim, hparams.postnet_kernel_size,
+                                stride=1,
+                                padding=int((hparams.postnet_kernel_size - 1) / 2)),
+            nn.Dropout(hparams.p_postnet_dropout),
+            *clone(nn.Sequential(Conv1dWithBatchNorm(hparams.postnet_embedding_dim, hparams.postnet_embedding_dim,
+                                                     hparams.postnet_kernel_size,
                                                      stride=1, padding=int((hparams.postnet_kernel_size - 1) / 2)),
                                  nn.Dropout(hparams.p_postnet_dropout)), hparams.postnet_conv_nums - 2),
-            Conv1dWithBatchNorm(hparams.postnet_embedding_dim, hparams.n_mel_channel, hparams.postnet_kernel_size, stride=1,
-                                padding=int((hparams.postnet_kernel_size - 1) / 2)), nn.Dropout(hparams.p_postnet_dropout)
+            Conv1dWithBatchNorm(hparams.postnet_embedding_dim, hparams.n_mel_channel, hparams.postnet_kernel_size,
+                                stride=1,
+                                padding=int((hparams.postnet_kernel_size - 1) / 2)),
+            nn.Dropout(hparams.p_postnet_dropout)
         )
 
     def forward(self, x):
@@ -122,7 +128,7 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self.n_mel_channel = hparams.n_mel_channel
         self.n_frames_per_step = hparams.n_frames_per_step
-        self.encoder_embedding_dim = hparams.encoder_embedding_dim
+        self.encoder_embedding_dim = hparams.encoder_embedding_dim + hparams.speaker_embedding_dim
         self.attention_rnn_dim = hparams.attention_rnn_dim
         self.decoder_rnn_dim = hparams.decoder_rnn_dim
         self.prenet_dim = hparams.prenet_dim
@@ -261,7 +267,6 @@ class Decoder(nn.Module):
 
         attention_weight_cat = torch.cat((self.attention_weight.unsqueeze(1),
                                           self.attention_weight_cum.unsqueeze(1)), dim=1)
-
         self.attention_context, self.attention_weight = self.attention_layer(
             self.attention_hidden, self.memory, attention_weight_cat, self.mask
         )
@@ -280,7 +285,7 @@ class Decoder(nn.Module):
         decoder_output = self.linear_project(decoder_hidden_attention_context)
         gate_prediction = self.gate_layer(decoder_hidden_attention_context)
 
-        return decoder_output, gate_prediction, self.attention_context
+        return decoder_output, gate_prediction, self.attention_weight
 
     def forward(self, memory, decoder_inputs, memory_lengths):
 
@@ -353,7 +358,7 @@ class Encoder(nn.Module):
             int(hparams.encoder_embedding_dim / 2), num_layers=1,
             batch_first=True, bidirectional=True)
 
-    def forward(self, x, input_lengths):
+    def forward(self, x, input_lengths, speaker_embedding=None):
         """
         x: batch text embedding : [batch, embedding_size, text_length]
         """
@@ -370,18 +375,27 @@ class Encoder(nn.Module):
         self.lstm.flatten_parameters()
         outputs, _ = self.lstm(x)
         outputs, _ = nn.utils.rnn.pad_packed_sequence(outputs, batch_first=True)
+        # outputs [batch, text_length, embedding_size]
+        # speaker_embedding: [batch, speaker_embedding_size]
+        if speaker_embedding is not None:
+            speaker_embedding = speaker_embedding.unsqueeze(1).repeat_interleave(outputs.size(1), dim=1)
+            outputs = torch.cat((outputs, speaker_embedding), dim=-1)
 
         return outputs
 
-    def inference(self, x):
+    def inference(self, x, speaker_embedding=None):
         for layer in self.conv_layer:
             x = layer(x)
         x = x.transpose(1, 2)
 
         self.lstm.flatten_parameters()
         outputs, _ = self.lstm(x)
+        if speaker_embedding is not None:
+            speaker_embedding = speaker_embedding.unsqueeze(1).repeat_interleave(outputs.size(1), dim=1)
+            outputs = torch.cat((outputs, speaker_embedding), dim=-1)
 
         return outputs
+
 
 class Tacotron(nn.Module):
     def __init__(self, hparams=hparams):
@@ -391,32 +405,76 @@ class Tacotron(nn.Module):
         self.n_mel_channel = hparams.n_mel_channel
         self.n_frames_per_step = hparams.n_frames_per_step
 
-        self.embedding = nn.Embedding(hparams.num_embedding, hparams.embedding_dim)
+        self.embedding = nn.Embedding(hparams.num_embedding, hparams.encoder_embedding_dim)
         self.encoder = Encoder(hparams)
         self.decoder = Decoder(hparams)
         self.postnet = Postnet(hparams)
 
         nn.init.xavier_normal_(self.embedding.weight)
 
-    def forwad(self, inputs):
-        text_inputs, text_lengths, mels, max_len, output_lenghts = inputs
+    def parse_output(self, outputs, output_lengths=None):
+        if self.mask_padding and output_lengths is not None:
+            mask = ~get_mask_from_lengths(output_lengths)
+            mask = mask.expand(self.n_mel_channel, mask.size(0), mask.size(1))
+            mask = mask.permute(1, 0, 2)
+
+            outputs[0] = outputs[0].masked_fill(mask, 0.0)
+            outputs[1] = outputs[1].masked_fill(mask, 0.0)
+            outputs[2] = outputs[2].masked_fill(mask[:, 0, :], 1e3)  # gate energies
+
+        return outputs
+
+    def forward(self, inputs: SynthesisBatchData):
+        text_inputs, text_lengths, speaker_embedding, mels, output_lenghts = \
+            inputs.text_inputs, inputs.text_lengths, inputs.speaker_embedding, inputs.mels, inputs.output_lengths
 
         text_lengths, output_lenghts = text_lengths.data, output_lenghts.data
 
-        embedding_inputs = self.embedding(text_inputs).transpose(1,2)
+        embedding_inputs = self.embedding(text_inputs).transpose(1, 2)
 
-        encoder_outputs = self.encoder(embedding_inputs, text_lengths)
-
+        encoder_outputs = self.encoder(embedding_inputs, text_lengths, speaker_embedding)
         mel_outputs, gate_outputs, alignments = self.decoder(
-            encoder_outputs, mels, memory_length=output_lenghts
+            encoder_outputs, mels, text_lengths
         )
 
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs_postnet + mel_outputs
+
+        return self.parse_output([mel_outputs, mel_outputs_postnet, gate_outputs, alignments],
+                                 output_lengths=output_lenghts)
+
+    def inference(self, text_inputs, speaker_embedding):
+        embedding_inputs = self.embedding(text_inputs).transpose(1, 2)
+        encoder_output = self.encoder.inference(embedding_inputs, speaker_embedding)
+        mel_outputs, gate_outputs, alignments = self.decoder.inference(encoder_output)
+
+        mel_outputs_postnet = self.postnet(mel_outputs)
+        mel_outputs_postnet = mel_outputs_postnet + mel_outputs
+
+        output = self.parse_output([mel_outputs, mel_outputs_postnet, gate_outputs, alignments])
+
+        return output
+
+    def get_loss(self, model_output, targets, output_lengths):
+        mel_target, gate_target = targets[0], targets[1]
+        mel_target.requires_grad_(False)
+        gate_target.requires_grad_(False)
+        gate_target = gate_target.view(-1, 1)
+
+        mel_out, mel_out_postnet, gate_out, _ = model_output
+        gate_out = gate_out.view(-1, 1)
+
+        mel_loss = (nn.MSELoss(reduction='sum')(mel_out, mel_target) +
+                    nn.MSELoss(reduction='sum')(mel_out_postnet, mel_target)) / (
+                               output_lengths.sum() * self.n_mel_channel)
+        gate_loss = nn.BCEWithLogitsLoss(reduction='sum')(gate_out, gate_target) / output_lengths.sum()
+        return (mel_loss + gate_loss)
+
+
 if __name__ == '__main__':
     B = 16
     memory_length = torch.randint(10, 100, (B,))
-    memory = torch.randn((B, max(memory_length), hparams.encoder_embedding_dim))
+    memory = torch.randn((B, max(memory_length), hparams.encoder_embedding_dim + hparams.speaker_embedding_dim))
 
     decoder_inputs = torch.randn((B, 100, hparams.n_mel_channel))
     decoder = Decoder(hparams)
@@ -425,4 +483,17 @@ if __name__ == '__main__':
 
     encoder = Encoder(hparams)
     text_ = torch.randn((B, hparams.encoder_embedding_dim, max(memory_length)))
-    memory = encoder(text_, memory_length)
+   # memory = encoder(text_, memory_length, torch.randn(B, hparams.speaker_embedding_dim))
+   # infer_ = decoder.inference(memory[:1])
+
+    # memory_length = torch.randint(10, 50, (B,))
+    #
+    # text_input = torch.randint(0, 44, (B, max(memory_length)))
+    # speaker_embedding = torch.randn(B, hparams.speaker_embedding_dim)
+    # mel_lengths = torch.randint(10, 100, (B,))
+    # mel = torch.randn((B, max(mel_lengths), hparams.n_mel_channel))
+    #
+    # model = Tacotron(hparams)
+    # inputs = text_input, memory_length, speaker_embedding, mel, max(mel_lengths), mel_lengths
+    #
+    # m_output = model(inputs)

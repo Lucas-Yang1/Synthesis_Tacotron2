@@ -46,4 +46,4 @@ def embed_utterance():
 if __name__ == '__main__':
     dataset_root = Path('D:/dataset/aidatatang_200zh/')
     out_dir = Path('./postdata')
-    process_dataset(dataset_root, out_dir, 2, True, "aidatatang_200zh")
+    process_dataset(dataset_root, out_dir, 2, False, "aidatatang_200zh")
